@@ -1,0 +1,477 @@
+================================================================================
+       PACKET ANALYZER — CODE EXPLANATION (Beginner Friendly)
+================================================================================
+
+This file explains EVERYTHING in the project:
+  - What each file does
+  - How they connect to each other
+  - What libraries we used and why
+  - Key concepts explained simply
+
+If you're new to networking or Python, start here!
+
+
+================================================================================
+  TABLE OF CONTENTS
+================================================================================
+
+  1. THE BIG PICTURE — What does this project do?
+  2. HOW THE FILES CONNECT — The pipeline
+  3. LIBRARIES USED — What we imported and why
+  4. FILE-BY-FILE BREAKDOWN
+     4.1  main.py
+     4.2  capture.py
+     4.3  parser.py
+     4.4  dpi_engine.py
+     4.5  flow_analyzer.py
+     4.6  generate_test_pcap.py
+  5. KEY CONCEPTS EXPLAINED
+  6. HOW TO USE WITH WIRESHARK
+
+
+================================================================================
+  1. THE BIG PICTURE
+================================================================================
+
+Imagine you're sitting at a post office, and every letter (packet) that passes
+through has multiple envelopes (layers). This program:
+
+  1. CAPTURES letters (packets) — either from a saved file or live from your
+     network card (like tapping into the mail stream)
+
+  2. OPENS each envelope layer by layer:
+     - Outer envelope = Ethernet (MAC addresses — who sent it physically?)
+     - Middle envelope = IP (IP addresses — who sent it over the internet?)
+     - Inner envelope = TCP/UDP (port numbers — which app is talking?)
+     - Letter inside = Payload (the actual data — website content, etc.)
+
+  3. IDENTIFIES which app sent it — Is this YouTube? Google? Netflix?
+     It does this by reading clues in the data (like reading the "To" field
+     on the letter).
+
+  4. TRACKS conversations — Groups all related packets into "flows"
+     (like tracking all letters between you and your friend as one
+     conversation).
+
+  5. CAN BLOCK traffic — Like a firewall, it can flag packets from
+     certain IPs, apps, or websites as "BLOCKED".
+
+
+================================================================================
+  2. HOW THE FILES CONNECT — The Pipeline
+================================================================================
+
+The files work like a factory assembly line. Each file does ONE job and
+passes the result to the next:
+
+    ┌─────────────────────────────────────────────────────────┐
+    │                        main.py                          │
+    │     (The boss — controls everything, talks to user)     │
+    │                                                         │
+    │  1. Reads command-line arguments (--file, --live, etc.) │
+    │  2. Calls capture.py to get packets                     │
+    │  3. For each packet:                                    │
+    │     a. Calls parser.py to decode it                     │
+    │     b. Calls dpi_engine.py to identify the app          │
+    │     c. Calls flow_analyzer.py to track the conversation │
+    │  4. Prints all the results                              │
+    └─────────────────────────────────────────────────────────┘
+                          │
+         ┌────────────────┼────────────────┐
+         │                │                │
+         ▼                ▼                ▼
+    capture.py       parser.py       dpi_engine.py
+    (Get packets)   (Decode them)   (Identify apps)
+                                         │
+                                    flow_analyzer.py
+                                    (Track conversations)
+
+
+  DATA FLOW:
+  ----------
+  capture.py  →  returns a LIST of raw Scapy Packet objects
+       │
+       ▼
+  parser.py   →  takes each Packet, returns a DICTIONARY with all fields
+       │            { "ip": {"src_ip": "1.2.3.4", ...}, "tcp": {...}, ... }
+       │
+       ▼
+  dpi_engine.py → takes each Packet, returns a DICTIONARY with app info
+       │            { "app": "YouTube", "domain": "www.youtube.com", ... }
+       │
+       ▼
+  flow_analyzer.py → takes each Packet, groups it into a Flow
+                      prints summary tables at the end
+
+
+================================================================================
+  3. LIBRARIES USED
+================================================================================
+
+We use ONE main external library: SCAPY
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │  SCAPY (pip install scapy)                                      │
+  │                                                                  │
+  │  What is it?                                                     │
+  │    Scapy is a powerful Python library for working with network   │
+  │    packets. It can read, create, send, and capture packets.      │
+  │                                                                  │
+  │  Why do we use it?                                               │
+  │    - rdpcap()  → reads .pcap files (Wireshark saves in this     │
+  │                   format)                                        │
+  │    - sniff()   → captures live traffic from your network card    │
+  │    - Packet objects have built-in layer parsing (IP, TCP, DNS)   │
+  │    - No need to manually read bytes — Scapy does it for us      │
+  │                                                                  │
+  │  Where do we use it?                                             │
+  │    - capture.py:  rdpcap() and sniff()                           │
+  │    - parser.py:   packet.haslayer(IP), packet[TCP].sport, etc.   │
+  │    - dpi_engine.py: packet[Raw].load (reading payload bytes)     │
+  │    - flow_analyzer.py: packet[IP].src, packet[TCP].sport, etc.   │
+  └──────────────────────────────────────────────────────────────────┘
+
+  Built-in Python libraries we use:
+    - argparse  → parses command-line arguments (--file, --live, etc.)
+    - sys       → system functions (exit codes)
+    - typing    → type hints (Dict, List, Optional — makes code clearer)
+    - struct    → packing/unpacking binary data (used in test generator)
+    - random    → random numbers (used in test generator)
+    - time      → timestamps
+
+
+  SCAPY LAYERS WE USE:
+    from scapy.all import:
+      Ether   → Ethernet layer (MAC addresses)
+      IP      → IPv4 layer (IP addresses)
+      IPv6    → IPv6 layer (newer IP addresses)
+      TCP     → TCP layer (reliable connections — web, email)
+      UDP     → UDP layer (fast connections — DNS, streaming)
+      DNS     → DNS layer (domain name lookups)
+      ICMP    → ICMP layer (ping, traceroute)
+      ARP     → ARP layer (maps IP to MAC on local network)
+      Raw     → Raw payload data (the actual content)
+
+
+================================================================================
+  4. FILE-BY-FILE BREAKDOWN
+================================================================================
+
+
+───────────────────────────────────────────────────────────
+  4.1  main.py — The Main Controller
+───────────────────────────────────────────────────────────
+
+  PURPOSE: Entry point. Controls everything.
+
+  WHAT IT DOES:
+    1. Creates a command-line parser with argparse
+       - --file <path>     → analyze a saved .pcap file
+       - --live            → capture live traffic
+       - --quiet           → don't show individual packets
+       - --block-app <name>→ block an app (YouTube, etc.)
+       - --list-interfaces → show available network adapters
+       ... and many more options
+
+    2. Calls the appropriate capture function
+    3. Runs the analysis pipeline on every packet
+    4. Prints results
+
+  KEY FUNCTIONS:
+    create_argument_parser() → defines all CLI options
+    print_banner()           → prints the startup header
+    analyze_packets()        → the main loop that processes every packet
+    main()                   → entry point, decides which mode to run
+
+  HOW analyze_packets() WORKS (the core loop):
+    for each packet:
+      parsed = parse_packet(packet)        ← decode the layers
+      dpi_result = dpi.inspect(packet)     ← identify the app
+      flow_analyzer.process_packet(packet) ← track the conversation
+      print the results
+
+
+───────────────────────────────────────────────────────────
+  4.2  capture.py — Packet Capture
+───────────────────────────────────────────────────────────
+
+  PURPOSE: Gets packets from either a file or live network.
+
+  WHAT IT DOES:
+    - read_pcap(file_path)
+        Uses scapy.rdpcap() to load ALL packets from a .pcap file
+        Returns: a list of Packet objects
+
+    - live_capture(interface, count, timeout, filter)
+        Uses scapy.sniff() to intercept live traffic
+        Returns: a list of Packet objects
+        NOTE: Requires admin/root privileges!
+
+    - get_available_interfaces()
+        Lists all network adapters on your machine
+        (Wi-Fi, Ethernet, Loopback, etc.)
+
+  EXAMPLE:
+    packets = read_pcap("my_capture.pcap")
+    # packets is now a list like: [Packet1, Packet2, Packet3, ...]
+    # Each packet contains all its layers (Ethernet, IP, TCP, etc.)
+
+
+───────────────────────────────────────────────────────────
+  4.3  parser.py — Protocol Decoder
+───────────────────────────────────────────────────────────
+
+  PURPOSE: Takes a raw packet and extracts human-readable info.
+
+  WHAT IT DOES:
+    - parse_packet(packet) → returns a dictionary like:
+        {
+          "timestamp": 1678901234.567,
+          "length": 128,
+          "layers": ["Ethernet", "IPv4", "TCP", "Payload"],
+          "ethernet": { "src_mac": "aa:bb:cc:dd:ee:ff", ... },
+          "ip": { "src_ip": "192.168.1.100", "dst_ip": "8.8.8.8", ... },
+          "tcp": { "src_port": 52431, "dst_port": 443, "flags": "SYN", ... },
+          "payload": { "length": 50, "preview": "16 03 01 00 f1 ...", ... }
+        }
+
+    - get_five_tuple(packet) → extracts the 5 values that identify a
+        connection: (src_ip, dst_ip, src_port, dst_port, protocol)
+
+    - format_packet_summary(parsed, num) → makes a pretty printable string
+
+  HOW IT PEELS THE LAYERS:
+    if packet.haslayer(Ether):    ← check if Ethernet layer exists
+      eth = packet[Ether]          ← get the Ethernet layer object
+      eth.src                      ← source MAC address
+      eth.dst                      ← destination MAC address
+
+    if packet.haslayer(IP):       ← check if IP layer exists
+      ip = packet[IP]
+      ip.src                       ← source IP (e.g., "192.168.1.100")
+      ip.dst                       ← destination IP
+
+    if packet.haslayer(TCP):
+      tcp = packet[TCP]
+      tcp.sport                    ← source port (random high number)
+      tcp.dport                    ← destination port (80, 443, 53, etc.)
+      tcp.flags                    ← connection flags (SYN, ACK, FIN)
+
+
+───────────────────────────────────────────────────────────
+  4.4  dpi_engine.py — Deep Packet Inspection
+───────────────────────────────────────────────────────────
+
+  PURPOSE: Looks INSIDE the packet data to figure out which app/website
+           generated it. This is the "brain" of the analyzer.
+
+  WHY IS THIS NEEDED?
+    Port 443 could be YouTube, Google, Netflix, or any HTTPS website.
+    Just knowing the port number isn't enough. DPI reads the actual
+    payload to identify the exact service.
+
+  HOW IT IDENTIFIES APPS (in order of priority):
+
+    1. TLS SNI EXTRACTION (for HTTPS traffic on port 443)
+       ──────────────────
+       When your browser visits https://www.youtube.com, the FIRST message
+       it sends is called a "Client Hello". This message contains the
+       domain name in CLEARTEXT (not encrypted yet). We parse this to
+       read the domain name.
+
+       The code looks for:
+         Byte 0 = 0x16 (this means "TLS Handshake")
+         Byte 5 = 0x01 (this means "Client Hello")
+         Then it skips through the TLS structure to find the SNI extension
+         (extension type 0x0000) which contains the domain name.
+
+    2. HTTP HOST HEADER (for HTTP traffic on port 80)
+       ───────────────────
+       HTTP requests have a "Host:" header, like:
+         GET /index.html HTTP/1.1
+         Host: www.example.com
+       We search the payload text for "Host:" and extract the value.
+
+    3. DNS QUERY (for DNS traffic on port 53)
+       ─────────
+       DNS requests contain the domain name being looked up.
+       If someone queries "www.youtube.com", we know they're
+       about to visit YouTube.
+
+    4. PORT-BASED FALLBACK
+       ────────────────────
+       If none of the above work, we guess based on the port:
+         Port 80  → HTTP
+         Port 443 → HTTPS
+         Port 53  → DNS
+         Port 22  → SSH
+         etc.
+
+  APP SIGNATURES:
+    Once we have a domain name (e.g., "www.youtube.com"), we check
+    if it contains any known keywords:
+      "youtube"  → YouTube
+      "google"   → Google
+      "netflix"  → Netflix
+      "facebook" → Facebook
+      ... and 16 more apps
+
+  BLOCKING RULES:
+    The DPI engine also acts like a firewall. You can block:
+      - Specific IPs:    --block-ip 10.0.0.1
+      - Specific apps:   --block-app YouTube
+      - Specific domains: --block-domain "*.facebook.com"
+      - Specific ports:  --block-port 8080
+
+  CONNECTION CACHING:
+    Once a connection is identified (e.g., "this is YouTube"), all
+    future packets in that same connection are automatically
+    labeled as YouTube without re-inspecting. This is efficient
+    because a single YouTube video involves thousands of packets.
+
+
+───────────────────────────────────────────────────────────
+  4.5  flow_analyzer.py — Flow Tracking
+───────────────────────────────────────────────────────────
+
+  PURPOSE: Groups packets into "flows" (conversations) and shows
+           statistics about each one.
+
+  WHAT IS A FLOW?
+    A flow = all packets between the same two endpoints.
+    Identified by 5 values (the "5-tuple"):
+      Source IP, Destination IP, Source Port, Destination Port, Protocol
+
+    Example: All packets between your computer (192.168.1.100:52431)
+    and YouTube (142.250.80.46:443) over TCP form ONE flow.
+
+  TWO CLASSES:
+
+    Flow (one conversation):
+      - src_ip, dst_ip, src_port, dst_port, protocol
+      - packet_count  → how many packets
+      - total_bytes   → how much data
+      - first_seen    → when it started
+      - last_seen     → when the last packet arrived
+      - duration      → last_seen - first_seen
+
+    FlowAnalyzer (manages all flows):
+      - flows = {}   → dictionary mapping flow keys to Flow objects
+      - process_packet(pkt) → extracts 5-tuple, creates/updates flow
+      - print_summary()     → prints the summary table
+
+  CANONICAL KEYS:
+    The analyzer treats BOTH directions of a connection as the same flow.
+    So packets from A→B and B→A both count toward ONE flow.
+    It does this by always putting the "smaller" IP:port first in the key.
+
+
+───────────────────────────────────────────────────────────
+  4.6  generate_test_pcap.py — Test Data Generator
+───────────────────────────────────────────────────────────
+
+  PURPOSE: Creates a fake .pcap file with sample traffic for testing.
+
+  WHAT IT GENERATES:
+    - 16 TLS connections with SNI (Google, YouTube, Facebook, etc.)
+      Each has: SYN → SYN-ACK → ACK → Client Hello (4 packets)
+    - 2 HTTP connections with Host headers
+    - 4 DNS queries (google.com, youtube.com, facebook.com, twitter.com)
+    - 5 packets from a "blocked" IP (192.168.1.50)
+
+  HOW IT WORKS:
+    It manually constructs packet bytes using Python's struct module:
+    - create_ethernet_header()  → 14 bytes of MAC addresses
+    - create_ip_header()        → 20 bytes of IP addresses
+    - create_tcp_header()       → 20 bytes of ports + flags
+    - create_tls_client_hello() → TLS handshake with SNI extension
+    - create_dns_query()        → DNS request packet
+
+    Then it writes them to a .pcap file with proper headers.
+
+
+================================================================================
+  5. KEY CONCEPTS EXPLAINED
+================================================================================
+
+  PACKET
+    A chunk of data sent over the network. Every time you load a
+    webpage, your computer sends and receives hundreds of packets.
+
+  PROTOCOL
+    A set of rules for communication. Like languages:
+    - TCP = reliable (makes sure all data arrives, in order)
+    - UDP = fast (sends data without checking if it arrived)
+
+  PORT NUMBER
+    Identifies which application on a computer is talking.
+    Think of it like apartment numbers in a building:
+    - Port 80  = HTTP (web browsing, unencrypted)
+    - Port 443 = HTTPS (web browsing, encrypted)
+    - Port 53  = DNS (domain name lookups)
+    - Port 22  = SSH (remote access)
+
+  MAC ADDRESS
+    A hardware address burned into your network adapter.
+    Format: aa:bb:cc:dd:ee:ff (6 bytes, shown as hex)
+    Used for communication on the LOCAL network only.
+
+  IP ADDRESS
+    A logical address used on the INTERNET.
+    Format: 192.168.1.100 (IPv4) or 2001:db8::1 (IPv6)
+
+  5-TUPLE
+    The 5 values that uniquely identify a network conversation:
+    (Source IP, Destination IP, Source Port, Destination Port, Protocol)
+
+  TLS/HTTPS
+    Encrypted web traffic. The data is scrambled so nobody can read it.
+    BUT the first message ("Client Hello") contains the domain name
+    in cleartext — that's how our DPI engine can identify the website.
+
+  SNI (Server Name Indication)
+    A field in the TLS Client Hello that says which website you want.
+    Example: When you visit https://youtube.com, the SNI = "youtube.com"
+
+  BPF FILTER
+    Berkeley Packet Filter — a mini-language for filtering packets.
+    Examples:
+      "tcp"           → only TCP packets
+      "udp port 53"   → only DNS traffic
+      "host 8.8.8.8"  → only traffic to/from Google DNS
+
+  PCAP FILE
+    The standard file format for captured network traffic.
+    Tools like Wireshark, tcpdump, and this analyzer all use .pcap files.
+
+
+================================================================================
+  6. HOW TO USE WITH WIRESHARK
+================================================================================
+
+  STEP 1: Capture traffic in Wireshark
+    - Open Wireshark
+    - Double-click your network interface (e.g., "Wi-Fi")
+    - Browse the web, watch videos, etc.
+    - Click the red STOP button
+
+  STEP 2: Save the capture
+    - File → Save As
+    - Choose format: Wireshark/tcpdump - pcap
+    - Name it: my_capture.pcap
+
+  STEP 3: Analyze with our tool
+    - python main.py --file my_capture.pcap
+    - python main.py --file my_capture.pcap --quiet    (summary only)
+    - python main.py --file my_capture.pcap --max 20   (first 20 packets)
+
+  STEP 4: Try blocking
+    - python main.py --file my_capture.pcap --block-app YouTube
+    - python main.py --file my_capture.pcap --block-ip 10.0.0.1
+
+  That's it! Any .pcap file from Wireshark works directly with this tool.
+
+
+================================================================================
+  END OF EXPLANATION
+================================================================================
