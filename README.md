@@ -73,8 +73,8 @@ This project is a **network packet analyzer** that reads captured network traffi
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/Packet_analyzer.git
-cd Packet_analyzer
+git clone https://github.com/your-username/network-packet-analyzer.git
+cd network-packet-analyzer
 
 # Install Python dependencies
 pip install scapy
